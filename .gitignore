@@ -202,9 +202,10 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+.idea
 .DS_Store
 .venv
-data
+
 database
 yêu-cầu.txt
 docker-compose.yml
