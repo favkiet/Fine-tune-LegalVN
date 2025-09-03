@@ -205,7 +205,7 @@ __marimo__/
 .idea
 .DS_Store
 .venv
-data
+
 database
 yêu-cầu.txt
 docker-compose.yml
