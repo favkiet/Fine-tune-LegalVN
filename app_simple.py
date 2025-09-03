@@ -13,6 +13,8 @@ from langchain_ollama import ChatOllama
 from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
+llm_model_name = "gemma3:1b"
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -161,10 +163,10 @@ class SimpleLegalQAWithLLM:
         """Initialize the LLM system."""
         try:
             with st.spinner("🔄 Đang khởi tạo LLM..."):
-                logger.info("Initializing ChatOllama with model: gemma3:1b")
+                logger.info(f"Initializing ChatOllama with model: {llm_model_name}")
                 # Initialize LLM with a smaller model for faster response
                 self.llm = ChatOllama(
-                    model="gemma3:1b",  # Smaller model for faster response
+                    model=llm_model_name,  # Smaller model for faster response
                     temperature=0.1,
                     top_p=0.9
                 )
