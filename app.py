@@ -18,6 +18,8 @@ from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 import logging
 import hashlib
+import subprocess
+import re
 import pickle
 import os
 from functools import lru_cache
@@ -32,7 +34,7 @@ from langchain.schema import Document
 dense_model_name = "sentence-transformers/all-MiniLM-L6-v2"
 sparse_model_name = "Qdrant/bm25"
 rerank_model_name = "jinaai/jina-reranker-v2-base-multilingual"
-llm_model_name = "gemma3:1b"
+llm_model_name = "llama3.1:8b"
 
 # Cache directory
 CACHE_DIR = "cache"
@@ -48,6 +50,60 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+def get_qdrant_container_info():
+    """
+    Lấy thông tin container Docker đang chạy với image Qdrant
+    """
+    try:
+        # Chạy lệnh docker ps để lấy thông tin container đang chạy
+        result = subprocess.run(
+            ['docker', 'ps', '--format', 'table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}'],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        lines = result.stdout.strip().split('\n')
+        if len(lines) < 2:  # Chỉ có header, không có container nào
+            return None
+            
+        # Tìm container có image chứa 'qdrant'
+        for line in lines[1:]:  # Bỏ qua header
+            parts = line.split('\t')
+            if len(parts) >= 4:
+                name, image, ports, status = parts[0], parts[1], parts[2], parts[3]
+                
+                if 'qdrant' in image.lower():
+                    # Parse port information
+                    port_info = "Không có port mapping"
+                    if ports and ports != '':
+                        # Tìm port 6333 trong ports
+                        port_match = re.search(r'(\d+):6333', ports)
+                        if port_match:
+                            host_port = port_match.group(1)
+                            port_info = f"Port: {host_port}->6333"
+                        else:
+                            port_info = f"Ports: {ports}"
+                    
+                    return {
+                        'name': name,
+                        'image': image,
+                        'ports': port_info,
+                        'status': status
+                    }
+        
+        return None
+        
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Lỗi khi chạy docker ps: {e}")
+        return None
+    except FileNotFoundError:
+        logger.error("Docker không được cài đặt hoặc không có trong PATH")
+        return None
+    except Exception as e:
+        logger.error(f"Lỗi không mong đợi khi kiểm tra Docker: {e}")
+        return None
 
 # Page configuration
 st.set_page_config(
@@ -538,12 +594,22 @@ def main():
             st.warning("⚠️ Hệ thống chưa được khởi tạo")
             
         # Qdrant connection info
-        st.info("""
-        **🔧 Thông tin Qdrant:**
-        - Container: sleepy_noyce
-        - Port: 6333
-        - Status: Đang chạy
-        """)
+        qdrant_info = get_qdrant_container_info()
+        if qdrant_info:
+            st.info(f"""
+            **🔧 Thông tin Qdrant:**
+            - Container: {qdrant_info['name']}
+            - Image: {qdrant_info['image']}
+            - {qdrant_info['ports']}
+            - Status: {qdrant_info['status']}
+            """)
+        else:
+            st.warning("""
+            **⚠️ Không tìm thấy container Qdrant:**
+            - Kiểm tra Docker có đang chạy không
+            - Kiểm tra container Qdrant có được khởi động không
+            - Chạy: `docker run -p 6333:6333 qdrant/qdrant`
+            """)
         
         st.divider()
         
