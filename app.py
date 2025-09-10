@@ -51,6 +51,82 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def parse_docker_ps_line(line):
+    """
+    Parse docker ps line sử dụng thuật toán stack để xử lý whitespace và tab
+    Format: NAMES\tIMAGE\tPORTS\tSTATUS
+    """
+    if not line.strip():
+        return None
+    
+    # Tách theo tab trước (trường hợp lý tưởng)
+    parts = line.split('\t')
+    
+    # Nếu có đủ 4 phần, return ngay
+    if len(parts) >= 4:
+        return {
+            'name': parts[0].strip(),
+            'image': parts[1].strip(),
+            'ports': parts[2].strip(),
+            'status': parts[3].strip()
+        }
+    
+    # Nếu không đủ phần, sử dụng thuật toán stack để parse
+    # Tìm các vị trí có thể là separator (2+ spaces hoặc tab)
+    words = []
+    current_word = ""
+    i = 0
+    
+    while i < len(line):
+        char = line[i]
+        
+        if char == '\t':
+            # Tab là separator rõ ràng
+            if current_word.strip():
+                words.append(current_word.strip())
+                current_word = ""
+        elif char == ' ':
+            # Space có thể là separator hoặc part của word
+            if current_word.strip():
+                # Kiểm tra xem có phải là separator không
+                # Nếu có 2+ spaces liên tiếp, đó là separator
+                space_count = 0
+                j = i
+                while j < len(line) and line[j] == ' ':
+                    space_count += 1
+                    j += 1
+                
+                if space_count >= 2:
+                    # Đây là separator
+                    words.append(current_word.strip())
+                    current_word = ""
+                    i = j - 1  # Skip spaces
+                else:
+                    # Đây là space trong word
+                    current_word += char
+            else:
+                # Bỏ qua leading spaces
+                pass
+        else:
+            current_word += char
+        
+        i += 1
+    
+    # Thêm word cuối cùng
+    if current_word.strip():
+        words.append(current_word.strip())
+    
+    # Kiểm tra có đủ 4 phần không
+    if len(words) >= 4:
+        return {
+            'name': words[0],
+            'image': words[1],
+            'ports': words[2],
+            'status': ' '.join(words[3:])  # Status có thể có spaces
+        }
+    
+    return None
+
 def get_qdrant_container_info():
     """
     Lấy thông tin container Docker đang chạy với image Qdrant
@@ -70,28 +146,27 @@ def get_qdrant_container_info():
             
         # Tìm container có image chứa 'qdrant'
         for line in lines[1:]:  # Bỏ qua header
-            parts = line.split('\t')
-            if len(parts) >= 4:
-                name, image, ports, status = parts[0], parts[1], parts[2], parts[3]
+            # Sử dụng thuật toán stack để parse chính xác
+            parsed_info = parse_docker_ps_line(line)
+            if parsed_info and 'qdrant' in parsed_info['image'].lower():
+                # Parse port information
+                ports = parsed_info['ports']
+                port_info = "Không có port mapping"
+                if ports and ports.strip() != '':
+                    # Tìm port 6333 trong ports
+                    port_match = re.search(r'(\d+):6333', ports)
+                    if port_match:
+                        host_port = port_match.group(1)
+                        port_info = f"Port: {host_port}->6333"
+                    else:
+                        port_info = f"Ports: {ports}"
                 
-                if 'qdrant' in image.lower():
-                    # Parse port information
-                    port_info = "Không có port mapping"
-                    if ports and ports != '':
-                        # Tìm port 6333 trong ports
-                        port_match = re.search(r'(\d+):6333', ports)
-                        if port_match:
-                            host_port = port_match.group(1)
-                            port_info = f"Port: {host_port}->6333"
-                        else:
-                            port_info = f"Ports: {ports}"
-                    
-                    return {
-                        'name': name,
-                        'image': image,
-                        'ports': port_info,
-                        'status': status
-                    }
+                return {
+                    'name': parsed_info['name'],
+                    'image': parsed_info['image'],
+                    'ports': port_info,
+                    'status': parsed_info['status']
+                }
         
         return None
         
