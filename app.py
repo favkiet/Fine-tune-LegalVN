@@ -17,6 +17,11 @@ import uuid
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 import logging
+import hashlib
+import pickle
+import os
+from functools import lru_cache
+import concurrent.futures
 
 # LangChain imports
 from langchain_ollama import ChatOllama
@@ -27,7 +32,11 @@ from langchain.schema import Document
 dense_model_name = "sentence-transformers/all-MiniLM-L6-v2"
 sparse_model_name = "Qdrant/bm25"
 rerank_model_name = "jinaai/jina-reranker-v2-base-multilingual"
-llm_model_name = "llama3.1:8b"
+llm_model_name = "gemma3:1b"
+
+# Cache directory
+CACHE_DIR = "cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 # Configure logging
 logging.basicConfig(
@@ -87,7 +96,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 class LegalQASystem:
-    """Main class for the Legal QA system."""
+    """Main class for the Legal QA system with performance optimizations."""
     
     def __init__(self):
         self.collection_name = "thue-phi-le-phi_all-MiniLM-L6-v2"
@@ -97,22 +106,51 @@ class LegalQASystem:
         self.rerank_model = None
         self.llm = None
         self.initialized = False
+        
+        # Performance optimizations
+        self.cache_enabled = True
+        self.fast_mode = False
+        self.query_cache = {}
+        self.embedding_cache = {}
     
     def initialize(self):
         """Initialize all models and connections."""
         try:
             with st.spinner("🔄 Đang khởi tạo hệ thống..."):
-                # Initialize Qdrant client
-                self.client = QdrantClient(
-                    host="localhost",
-                    port=6333,
-                    timeout=600.0
-                )
-                logger.info("Qdrant client initialized successfully")
+                # Initialize Qdrant client with optimized settings
+                try:
+                    self.client = QdrantClient(
+                        host="localhost",
+                        port=6333,
+                        timeout=30.0,  # Reduced timeout
+                        prefer_grpc=False  # Use HTTP for compatibility
+                    )
+                    # Test connection
+                    collections = self.client.get_collections()
+                    logger.info("Qdrant client initialized successfully")
+                    logger.info(f"Available collections: {[c.name for c in collections.collections]}")
+                except Exception as e:
+                    logger.error(f"Failed to connect to Qdrant: {e}")
+                    # Try alternative connection methods
+                    try:
+                        self.client = QdrantClient(
+                            host="127.0.0.1",
+                            port=6333,
+                            timeout=10.0,
+                            prefer_grpc=False
+                        )
+                        collections = self.client.get_collections()
+                        logger.info("Qdrant client connected with alternative settings")
+                        logger.info(f"Available collections: {[c.name for c in collections.collections]}")
+                    except Exception as e2:
+                        logger.error(f"Alternative connection also failed: {e2}")
+                        raise Exception(f"Cannot connect to Qdrant server. Please ensure Qdrant is running on localhost:6333. Error: {e}")
                 
-                # Initialize embedding models
+                # Initialize embedding models with caching
                 self.dense_model = SentenceTransformer(dense_model_name)
-                logger.info("Dense embedding model (SentenceTransformer) initialized")
+                # Enable caching for sentence transformer
+                self.dense_model.encode = lru_cache(maxsize=1000)(self.dense_model.encode)
+                logger.info("Dense embedding model (SentenceTransformer) initialized with caching")
                 
                 self.sparse_model = SparseTextEmbedding(sparse_model_name)
                 logger.info("Sparse embedding model (FastEmbed) initialized")
@@ -120,11 +158,14 @@ class LegalQASystem:
                 self.rerank_model = TextCrossEncoder(rerank_model_name)
                 logger.info("Rerank model (TextCrossEncoder) initialized")
                 
-                # Initialize LLM
+                # Initialize LLM with optimized settings
                 self.llm = ChatOllama(
                     model=llm_model_name,
                     temperature=0.1,
-                    top_p=0.9
+                    top_p=0.9,
+                    num_ctx=2048,  # Reduced context window
+                    num_predict=512,  # Limit response length
+                    num_thread=4  # Optimize threading
                 )
                 logger.info("LLM (llama3.1:8b) initialized successfully")
                 
@@ -137,21 +178,128 @@ class LegalQASystem:
             st.error(f"❌ Lỗi khởi tạo hệ thống: {str(e)}")
             self.initialized = False
     
+    def _get_cache_key(self, query: str, top_k: int, rerank_top_k: int) -> str:
+        """Generate cache key for query."""
+        return hashlib.md5(f"{query}_{top_k}_{rerank_top_k}_{self.fast_mode}".encode()).hexdigest()
+    
+    def _load_from_cache(self, cache_key: str) -> Optional[List[Dict]]:
+        """Load results from cache."""
+        if not self.cache_enabled:
+            return None
+        
+        cache_file = os.path.join(CACHE_DIR, f"{cache_key}.pkl")
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'rb') as f:
+                    cached_data = pickle.load(f)
+                    logger.info(f"Cache hit for query: {cache_key[:10]}...")
+                    return cached_data
+            except Exception as e:
+                logger.warning(f"Failed to load cache: {e}")
+        return None
+    
+    def _save_to_cache(self, cache_key: str, data: List[Dict]):
+        """Save results to cache."""
+        if not self.cache_enabled:
+            return
+        
+        try:
+            cache_file = os.path.join(CACHE_DIR, f"{cache_key}.pkl")
+            with open(cache_file, 'wb') as f:
+                pickle.dump(data, f)
+            logger.info(f"Saved to cache: {cache_key[:10]}...")
+        except Exception as e:
+            logger.warning(f"Failed to save cache: {e}")
+    
+    def retrieve_and_rerank_fast(self, query: str, top_k: int = 10, rerank_top_k: int = 5) -> List[Dict]:
+        """Fast retrieval without reranking for speed."""
+        logger.info(f"Fast retrieval for query: {query[:50]}...")
+        
+        if not self.initialized:
+            return []
+        
+        # Check cache first
+        cache_key = self._get_cache_key(query, top_k, rerank_top_k)
+        cached_result = self._load_from_cache(cache_key)
+        if cached_result:
+            return cached_result
+        
+        try:
+            # Generate embeddings in parallel
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                dense_future = executor.submit(self.dense_model.encode, query)
+                sparse_future = executor.submit(lambda: list(self.sparse_model.embed(query))[0])
+                
+                dense_vector_query = dense_future.result()
+                bm25_query_vector = sparse_future.result()
+            
+            # Perform hybrid search with reduced parameters
+            search_result = self.client.query_points(
+                collection_name=self.collection_name,
+                query=models.FusionQuery(
+                    fusion=models.Fusion.RRF
+                ),
+                prefetch=[
+                    models.Prefetch(
+                        query=dense_vector_query,
+                        using="dense",
+                        limit=top_k
+                    ),
+                    models.Prefetch(
+                        query=bm25_query_vector.as_object(),
+                        using="bm25",
+                        limit=top_k
+                    ),
+                ],
+                with_payload=True,
+                with_vectors=False,  # Don't need vectors for faster response
+                limit=rerank_top_k  # Return fewer results
+            ).points
+            
+            logger.info(f"Fast retrieval returned {len(search_result)} documents")
+            
+            # Prepare results without reranking
+            results = []
+            for rank, hit in enumerate(search_result, 1):
+                results.append({
+                    "rank": rank,
+                    "id": hit.id,
+                    "document": hit.payload["raw_context"],
+                    "rerank_score": hit.score if hasattr(hit, 'score') else 1.0,
+                    "original_score": hit.score if hasattr(hit, 'score') else None,
+                    "create_at": hit.payload.get("create_at", "N/A")
+                })
+            
+            # Cache the results
+            self._save_to_cache(cache_key, results)
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error in fast retrieval: {str(e)}", exc_info=True)
+            return []
+    
     def retrieve_and_rerank(self, query: str, top_k: int = 20, rerank_top_k: int = 10) -> List[Dict]:
-        """Perform hybrid retrieval and reranking."""
+        """Perform hybrid retrieval and reranking with caching."""
         logger.info(f"Starting retrieval and reranking for query: {query[:100]}...")
         logger.info(f"Parameters: top_k={top_k}, rerank_top_k={rerank_top_k}")
         
         if not self.initialized:
             return []
         
+        # Check cache first
+        cache_key = self._get_cache_key(query, top_k, rerank_top_k)
+        cached_result = self._load_from_cache(cache_key)
+        if cached_result:
+            return cached_result
+        
         try:
-            # Generate query embeddings
-            dense_vector_query = self.dense_model.encode(query)
-            logger.info(f"Dense vector generated, shape: {dense_vector_query.shape}")
-            
-            bm25_vector_query = self.sparse_model.embed(query)
-            bm25_query_vector = list(bm25_vector_query)[0]
+            # Generate embeddings in parallel
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                dense_future = executor.submit(self.dense_model.encode, query)
+                sparse_future = executor.submit(lambda: list(self.sparse_model.embed(query))[0])
+                
+                dense_vector_query = dense_future.result()
+                bm25_query_vector = sparse_future.result()
             
             # Perform hybrid search
             logger.info(f"Performing hybrid search on collection: {self.collection_name}")
@@ -173,17 +321,30 @@ class LegalQASystem:
                     ),
                 ],
                 with_payload=True,
-                with_vectors=True,
+                with_vectors=False,  # Don't need vectors for faster response
                 limit=top_k
             ).points
             
             logger.info(f"Retrieved {len(search_result)} documents from vector search")
             
-            # Extract document texts for reranking
+            # Extract document texts for reranking (fewer documents)
             initial_hits = [hit.payload["raw_context"] for hit in search_result[:rerank_top_k]]
             
-            if not initial_hits:
-                return []
+            if not initial_hits or not self.rerank_model:
+                # Return without reranking if no rerank model or no hits
+                results = []
+                for rank, hit in enumerate(search_result[:rerank_top_k], 1):
+                    results.append({
+                        "rank": rank,
+                        "id": hit.id,
+                        "document": hit.payload["raw_context"],
+                        "rerank_score": hit.score if hasattr(hit, 'score') else 1.0,
+                        "original_score": hit.score if hasattr(hit, 'score') else None,
+                        "create_at": hit.payload.get("create_at", "N/A")
+                    })
+                # Cache the results
+                self._save_to_cache(cache_key, results)
+                return results
             
             logger.info(f"Performing reranking on {len(initial_hits)} documents...")
             # Perform reranking
@@ -206,12 +367,50 @@ class LegalQASystem:
                     "create_at": original_hit.payload.get("create_at", "N/A")
                 })
             
+            # Cache the results
+            self._save_to_cache(cache_key, results)
             logger.info(f"Reranking completed, returning {len(results)} results")
             return results
             
         except Exception as e:
             logger.error(f"Error in retrieve_and_rerank: {str(e)}", exc_info=True)
             return []
+    
+    def generate_answer_fast(self, query: str, context_docs: List[str]) -> str:
+        """Generate answer with optimized prompt and settings."""
+        logger.info(f"Fast answer generation for query: {query[:50]}...")
+        
+        if not self.initialized or not context_docs:
+            return "Xin lỗi, tôi không thể tạo câu trả lời vào lúc này."
+        
+        try:
+            # Use only top 2 documents for faster processing
+            context = "\n\n".join(context_docs[:2])
+            logger.info(f"Context length: {len(context)} characters")
+            
+            # Optimized prompt template (shorter and more focused)
+            prompt_template = PromptTemplate(
+                input_variables=["context", "question"],
+                template="""Dựa trên thông tin pháp lý sau, trả lời câu hỏi một cách ngắn gọn và chính xác:
+
+Thông tin: {context}
+
+Câu hỏi: {question}
+
+Trả lời ngắn gọn:"""
+            )
+            
+            # Create chain
+            chain = prompt_template | self.llm | StrOutputParser()
+            
+            # Generate answer
+            answer = chain.invoke({"context": context, "question": query})
+            logger.info(f"Fast answer generated, length: {len(answer)} characters")
+            return answer
+            
+        except Exception as e:
+            logger.error(f"Error in fast answer generation: {str(e)}", exc_info=True)
+            return "Xin lỗi, có lỗi xảy ra khi tạo câu trả lời."
     
     def generate_answer(self, query: str, context_docs: List[str]) -> str:
         """Generate answer using LLM with retrieved context."""
@@ -226,26 +425,17 @@ class LegalQASystem:
             context = "\n\n".join(context_docs[:3])  # Use top 3 documents
             logger.info(f"Context length: {len(context)} characters")
             
-            # Create prompt template
+            # Optimized prompt template
             prompt_template = PromptTemplate(
                 input_variables=["context", "question"],
-                template="""
-Bạn là một chuyên gia tư vấn pháp luật Việt Nam. Hãy trả lời câu hỏi dựa trên thông tin pháp lý được cung cấp.
+                template="""Bạn là chuyên gia tư vấn pháp luật Việt Nam. Trả lời dựa trên thông tin được cung cấp:
 
 Thông tin pháp lý:
 {context}
 
 Câu hỏi: {question}
 
-Hướng dẫn trả lời:
-1. Trả lời chính xác dựa trên thông tin được cung cấp
-2. Sử dụng ngôn ngữ dễ hiểu, thân thiện
-3. Nếu cần thiết, hãy giải thích thêm về các khái niệm pháp lý
-4. Nếu thông tin không đủ để trả lời, hãy nói rõ điều đó
-5. Luôn nhắc nhở người dùng nên tham khảo ý kiến luật sư cho các vấn đề phức tạp
-
-Trả lời:
-"""
+Trả lời:"""
             )
             
             # Create chain
@@ -269,9 +459,11 @@ def initialize_session_state():
         st.session_state.qa_system = LegalQASystem()
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
+    if "performance_mode" not in st.session_state:
+        st.session_state.performance_mode = "fast"  # fast, balanced, accurate
 
-def display_chat_message(role: str, content: str, sources: List[Dict] = None):
-    """Display a chat message with proper styling."""
+def display_chat_message(role: str, content: str, sources: List[Dict] = None, performance_info: str = None):
+    """Display a chat message with performance info."""
     if role == "user":
         st.markdown(f"""
         <div class="chat-message user-message">
@@ -286,6 +478,14 @@ def display_chat_message(role: str, content: str, sources: List[Dict] = None):
             {content}
         </div>
         """, unsafe_allow_html=True)
+        
+        # Display performance info
+        if performance_info:
+            st.markdown(f"""
+            <div style="background-color: #e8f5e8; padding: 0.5rem; border-radius: 0.3rem; font-size: 0.8rem; color: #2e7d32; margin-top: 0.5rem;">
+                {performance_info}
+            </div>
+            """, unsafe_allow_html=True)
         
         # Display sources if available
         if sources:
@@ -313,6 +513,20 @@ def main():
     with st.sidebar:
         st.header("⚙️ Cài đặt")
         
+        # Performance mode selection
+        st.subheader("🚀 Chế độ hiệu suất")
+        performance_mode = st.selectbox(
+            "Chọn chế độ:",
+            ["fast", "balanced", "accurate"],
+            index=0,
+            format_func=lambda x: {
+                "fast": "⚡ Nhanh (không rerank)",
+                "balanced": "⚖️ Cân bằng",
+                "accurate": "🎯 Chính xác (rerank đầy đủ)"
+            }[x]
+        )
+        st.session_state.performance_mode = performance_mode
+        
         # Initialize system button
         if st.button("🚀 Khởi tạo hệ thống", type="primary"):
             st.session_state.qa_system.initialize()
@@ -322,13 +536,41 @@ def main():
             st.success("✅ Hệ thống đã sẵn sàng")
         else:
             st.warning("⚠️ Hệ thống chưa được khởi tạo")
+            
+        # Qdrant connection info
+        st.info("""
+        **🔧 Thông tin Qdrant:**
+        - Container: sleepy_noyce
+        - Port: 6333
+        - Status: Đang chạy
+        """)
         
         st.divider()
         
-        # Settings
+        # Settings based on performance mode
         st.subheader("🔧 Tham số tìm kiếm")
-        top_k = st.slider("Số lượng tài liệu tìm kiếm", 5, 50, 20)
-        rerank_top_k = st.slider("Số lượng tài liệu rerank", 3, 20, 10)
+        
+        if performance_mode == "fast":
+            top_k = st.slider("Số lượng tài liệu tìm kiếm", 5, 20, 10)
+            rerank_top_k = st.slider("Số lượng tài liệu hiển thị", 3, 10, 5)
+        elif performance_mode == "balanced":
+            top_k = st.slider("Số lượng tài liệu tìm kiếm", 10, 30, 15)
+            rerank_top_k = st.slider("Số lượng tài liệu rerank", 5, 15, 8)
+        else:  # accurate
+            top_k = st.slider("Số lượng tài liệu tìm kiếm", 15, 50, 20)
+            rerank_top_k = st.slider("Số lượng tài liệu rerank", 8, 20, 10)
+        
+        # Cache settings
+        st.subheader("💾 Cache")
+        cache_enabled = st.checkbox("Bật cache", value=True)
+        st.session_state.qa_system.cache_enabled = cache_enabled
+        
+        if st.button("🗑️ Xóa cache"):
+            import shutil
+            if os.path.exists(CACHE_DIR):
+                shutil.rmtree(CACHE_DIR)
+                os.makedirs(CACHE_DIR, exist_ok=True)
+            st.success("Cache đã được xóa!")
         
         st.divider()
         
@@ -352,7 +594,8 @@ def main():
                 display_chat_message(
                     message["role"], 
                     message["content"], 
-                    message.get("sources")
+                    message.get("sources"),
+                    message.get("performance_info")
                 )
         
         # Chat input
@@ -362,29 +605,43 @@ def main():
             st.session_state.messages.append({"role": "user", "content": prompt})
             display_chat_message("user", prompt)
             
-            # Generate response
+            # Generate response based on performance mode
             if st.session_state.qa_system.initialized:
-                with st.spinner("🔍 Đang tìm kiếm thông tin..."):
-                    # Retrieve relevant documents
-                    retrieved_docs = st.session_state.qa_system.retrieve_and_rerank(
-                        prompt, top_k=top_k, rerank_top_k=rerank_top_k
-                    )
-                    logger.info(f"Retrieved {len(retrieved_docs)} documents")
+                start_time = datetime.now()
                 
-                with st.spinner("🤖 Đang tạo câu trả lời..."):
-                    # Generate answer
-                    context_docs = [doc["document"] for doc in retrieved_docs]
-                    answer = st.session_state.qa_system.generate_answer(prompt, context_docs)
-                    logger.info("Generated answer successfully")
+                if performance_mode == "fast":
+                    with st.spinner("⚡ Đang tìm kiếm nhanh..."):
+                        retrieved_docs = st.session_state.qa_system.retrieve_and_rerank_fast(
+                            prompt, top_k=top_k, rerank_top_k=rerank_top_k
+                        )
+                    
+                    with st.spinner("🤖 Đang tạo câu trả lời nhanh..."):
+                        context_docs = [doc["document"] for doc in retrieved_docs]
+                        answer = st.session_state.qa_system.generate_answer_fast(prompt, context_docs)
+                
+                else:  # balanced or accurate
+                    with st.spinner("🔍 Đang tìm kiếm thông tin..."):
+                        retrieved_docs = st.session_state.qa_system.retrieve_and_rerank(
+                            prompt, top_k=top_k, rerank_top_k=rerank_top_k
+                        )
+                    
+                    with st.spinner("🤖 Đang tạo câu trả lời..."):
+                        context_docs = [doc["document"] for doc in retrieved_docs]
+                        answer = st.session_state.qa_system.generate_answer(prompt, context_docs)
+                
+                end_time = datetime.now()
+                response_time = (end_time - start_time).total_seconds()
+                performance_info = f"⚡ Thời gian phản hồi: {response_time:.2f}s | 📄 Tài liệu: {len(retrieved_docs)} | 🎯 Chế độ: {performance_mode}"
                 
                 # Add assistant message to chat history
                 st.session_state.messages.append({
                     "role": "assistant", 
                     "content": answer,
-                    "sources": retrieved_docs
+                    "sources": retrieved_docs,
+                    "performance_info": performance_info
                 })
-                logger.info("Added assistant response to chat history")
-                display_chat_message("assistant", answer, retrieved_docs)
+                
+                display_chat_message("assistant", answer, retrieved_docs, performance_info)
             else:
                 logger.warning("System not initialized, showing error message")
                 error_msg = "⚠️ Vui lòng khởi tạo hệ thống trước khi sử dụng."
@@ -405,8 +662,32 @@ def main():
                 st.metric("📄 Tổng tài liệu", f"{collection_info.points_count:,}")
                 st.metric("💬 Số tin nhắn", len(st.session_state.messages))
                 
+                # Cache statistics
+                cache_files = len([f for f in os.listdir(CACHE_DIR) if f.endswith('.pkl')])
+                st.metric("💾 Cache entries", cache_files)
+                
             except Exception as e:
                 st.error(f"Lỗi lấy thông tin: {str(e)}")
+        
+        st.divider()
+        
+        # Performance tips
+        st.subheader("💡 Mẹo tối ưu")
+        st.markdown("""
+        **⚡ Chế độ Nhanh:**
+        - Không sử dụng reranking
+        - Phản hồi nhanh nhất
+        - Phù hợp cho câu hỏi đơn giản
+        
+        **⚖️ Chế độ Cân bằng:**
+        - Reranking có chọn lọc
+        - Tốc độ và chất lượng cân bằng
+        
+        **🎯 Chế độ Chính xác:**
+        - Reranking đầy đủ
+        - Chất lượng cao nhất
+        - Phù hợp cho câu hỏi phức tạp
+        """)
         
         st.divider()
         
@@ -429,27 +710,33 @@ def main():
                 
                 # Generate response automatically
                 if st.session_state.qa_system.initialized:
-                    with st.spinner("🔍 Đang tìm kiếm thông tin..."):
-                        # Retrieve relevant documents
+                    start_time = datetime.now()
+                    
+                    if performance_mode == "fast":
+                        retrieved_docs = st.session_state.qa_system.retrieve_and_rerank_fast(
+                            question, top_k=top_k, rerank_top_k=rerank_top_k
+                        )
+                        context_docs = [doc["document"] for doc in retrieved_docs]
+                        answer = st.session_state.qa_system.generate_answer_fast(question, context_docs)
+                    else:
                         retrieved_docs = st.session_state.qa_system.retrieve_and_rerank(
                             question, top_k=top_k, rerank_top_k=rerank_top_k
                         )
-                        logger.info(f"Retrieved {len(retrieved_docs)} documents")
-                    
-                    with st.spinner("🤖 Đang tạo câu trả lời..."):
-                        # Generate answer
                         context_docs = [doc["document"] for doc in retrieved_docs]
                         answer = st.session_state.qa_system.generate_answer(question, context_docs)
-                        logger.info("Generated answer successfully")
                     
-                    # Add assistant message to chat history
+                    end_time = datetime.now()
+                    response_time = (end_time - start_time).total_seconds()
+                    performance_info = f"⚡ Thời gian phản hồi: {response_time:.2f}s | 📄 Tài liệu: {len(retrieved_docs)} | 🎯 Chế độ: {performance_mode}"
+                    
                     st.session_state.messages.append({
                         "role": "assistant", 
                         "content": answer,
-                        "sources": retrieved_docs
+                        "sources": retrieved_docs,
+                        "performance_info": performance_info
                     })
                 else:
-                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                    st.session_state.messages.append({"role": "assistant", "content": "⚠️ Vui lòng khởi tạo hệ thống trước khi sử dụng."})
                 
                 st.rerun()
         
@@ -458,8 +745,9 @@ def main():
         # Footer
         st.markdown("""
         <div style="text-align: center; color: #666; font-size: 0.8rem;">
-            <p>⚖️ Legal QA Chatbot v1.0</p>
+            <p>⚖️ Legal QA Chatbot v2.0 - Optimized</p>
             <p>Powered by RAG + Ollama + Qdrant</p>
+            <p>🚀 Enhanced Performance</p>
         </div>
         """, unsafe_allow_html=True)
 
