@@ -2,16 +2,16 @@
 
 ## 🚀 Tổng quan
 
-**Legal QA Chatbot** là một hệ thống chatbot thông minh sử dụng AI để tư vấn pháp luật Việt Nam. Hệ thống được xây dựng với công nghệ RAG (Retrieval Augmented Generation) và có thể hoạt động ở nhiều chế độ khác nhau tùy theo nhu cầu sử dụng.
+**Legal QA Chatbot** là một hệ thống chatbot thông minh sử dụng AI để tư vấn pháp luật Việt Nam. Hệ thống được xây dựng với công nghệ RAG (Retrieval Augmented Generation) và cung cấp một ứng dụng web Streamlit mạnh mẽ để tương tác.
 
 ### 🎯 Tính năng chính
 
 - **🤖 Chatbot AI**: Tư vấn pháp luật tự động với độ chính xác cao
-- **📚 RAG System**: Tìm kiếm và truy xuất thông tin từ cơ sở dữ liệu pháp luật
-- **⚡ Đa chế độ**: Simple LLM, Full RAG, và Auto-start
-- **🌐 Web Interface**: Giao diện Streamlit thân thiện và trực quan
-- **📊 Monitoring**: Hệ thống logging và thống kê chi tiết
-- **🔍 Hybrid Search**: Kết hợp dense và sparse vectors để tìm kiếm tối ưu
+- **📚 RAG System**: Tìm kiếm và truy xuất thông tin từ cơ sở dữ liệu pháp luật Qdrant
+- **🔍 Hybrid Search**: Kết hợp dense và sparse vectors với reranking
+- **🌐 Web Interface**: Giao diện Streamlit với 3 chế độ hiệu suất
+- **📊 Monitoring**: Hệ thống logging và caching tối ưu hóa
+- **🛠️ Data Pipeline**: Scripts crawl và xử lý dữ liệu pháp luật
 
 ### 🏗️ Kiến trúc hệ thống
 
@@ -61,7 +61,7 @@ cd Fine-tune-LegalVN
 # Cài đặt uv nếu chưa có
 pip install uv
 
-# Cài đặt dependencies
+# Cài đặt dependencies từ pyproject.toml
 uv sync
 ```
 
@@ -77,7 +77,7 @@ venv\Scripts\activate
 # Linux/Mac:
 source venv/bin/activate
 
-# Cài đặt dependencies
+# Cài đặt dependencies từ pyproject.toml
 pip install -e .
 ```
 
@@ -160,68 +160,30 @@ python scripts/setup_database.py
 
 ## 🚀 Hướng dẫn Chạy App
 
-### Phương án 1: Simple LLM (Dễ nhất - Không cần Qdrant)
-
 ```bash
-# Bước 1: Cài đặt model nhỏ
-ollama pull gemma3:1b
-
-# Bước 2: Chạy ứng dụng
-streamlit run app_simple.py
-```
-
-**Tính năng:**
-- ✅ Không cần Qdrant database
-- ✅ Setup nhanh và đơn giản
-- ✅ Sử dụng kiến thức có sẵn của LLM
-- ⚠️ Chất lượng trả lời phụ thuộc vào training data của model
-
-### Phương án 2: Full RAG (Đầy đủ tính năng)
-
-```bash
-# Bước 1: Khởi động Qdrant
+# Bước 1: Khởi động Qdrant Vector Database
 docker run -d --name qdrant-legal-qa -p 6333:6333 qdrant/qdrant
 
-# Bước 2: Cài đặt model lớn
+# Bước 2: Cài đặt Ollama model
 ollama pull llama3.1:8b
 
 # Bước 3: Tạo collection và index dữ liệu
 # Chạy notebook: notebooks/index_database.ipynb
 
-# Bước 4: Chạy ứng dụng
+# Bước 4: Chạy ứng dụng Streamlit
 streamlit run app.py
 ```
 
-**Tính năng:**
-- ✅ RAG system với vector database
-- ✅ Hybrid search (dense + sparse)
-- ✅ Reranking để tối ưu kết quả
-- ✅ Nguồn tham khảo chi tiết
-- ⚠️ Setup phức tạp hơn
+**Tính năng có sẵn:**
+- ✅ **RAG System**: Hybrid search với dense + sparse vectors
+- ✅ **Reranking**: Sắp xếp lại kết quả với jina-reranker-v2
+- ✅ **3 chế độ hiệu suất**: Fast, Balanced, Accurate
+- ✅ **Caching System**: Cache embeddings và kết quả tìm kiếm
+- ✅ **Performance Monitoring**: Thống kê real-time
+- ✅ **Source References**: Hiển thị tài liệu tham khảo với điểm số
+- ✅ **Sample Questions**: Click để sử dụng câu hỏi mẫu
+- ✅ **Docker Integration**: Tự động phát hiện Qdrant container
 
-### Phương án 3: Auto-start (Tự động hóa)
-
-```bash
-# Chạy script tự động
-python start_app.py
-```
-
-**Tính năng:**
-- ✅ Tự động kiểm tra và khởi động services
-- ✅ Tự động cài đặt models nếu thiếu
-- ✅ Tự động start Streamlit app
-- ✅ Error handling và troubleshooting
-
-## 📊 So sánh các Phiên bản
-
-| Tính năng | app_simple.py | app.py | start_app.py |
-|-----------|---------------|--------|--------------|
-| **Setup Complexity** | 🟢 Dễ | 🟡 Trung bình | 🟢 Dễ |
-| **Response Quality** | 🟡 Tốt | 🟢 Rất tốt | 🟢 Rất tốt |
-| **Speed** | 🟢 Nhanh | 🟡 Trung bình | 🟡 Trung bình |
-| **Resource Usage** | 🟢 Thấp | 🟡 Trung bình | 🟡 Trung bình |
-| **RAG System** | ❌ Không | ✅ Có | ✅ Có |
-| **Source References** | ❌ Không | ✅ Có | ✅ Có |
 
 ## 🎯 Cách sử dụng
 
@@ -266,14 +228,20 @@ llm_model_name = "llama3.1:8b"  # Thay đổi model ở đây
 ### Thay đổi Collection
 
 ```python
-# Dòng 158
+# Dòng 233
 self.collection_name = "thue-phi-le-phi_all-MiniLM-L6-v2"
 ```
+
+### Chế độ hiệu suất
+
+- **⚡ Fast**: Không sử dụng reranking, phản hồi nhanh nhất
+- **⚖️ Balanced**: Reranking có chọn lọc, cân bằng tốc độ và chất lượng
+- **🎯 Accurate**: Reranking đầy đủ, chất lượng cao nhất
 
 ### Thay đổi Prompt Template
 
 ```python
-# Trong method generate_answer()
+# Trong method generate_answer() (dòng 560-570)
 prompt_template = PromptTemplate(
     input_variables=["context", "question"],
     template="""Bạn là chuyên gia tư vấn pháp luật Việt Nam...
@@ -317,7 +285,7 @@ ollama list
 
 # Cài đặt model
 ollama pull llama3.1:8b  # cho app.py
-ollama pull gemma3:1b    # cho app_simple.py
+ollama pull gemma3:1b   # nhẹ và nhanh hơn
 
 # Khởi động Ollama
 ollama serve
@@ -389,12 +357,11 @@ grep "Retrieved.*documents" legal_qa_full.log
 
 ### Tính năng sắp tới
 
-1. **Voice input**: Sử dụng `streamlit-audio-recorder`
-2. **File upload**: Cho phép upload tài liệu pháp luật
-3. **Export chat**: Xuất lịch sử chat ra PDF
-4. **Multi-language**: Hỗ trợ tiếng Anh
-5. **Admin panel**: Quản lý collection và models
-6. **API endpoints**: REST API cho integration
+1. **File upload**: Cho phép upload tài liệu pháp luật
+2. **Export chat**: Xuất lịch sử chat ra PDF
+3. **Multi-language**: Hỗ trợ tiếng Anh
+4. **Admin panel**: Quản lý collection và models
+5. **API endpoints**: REST API cho integration
 
 ### Cải thiện performance
 
@@ -411,17 +378,29 @@ grep "Retrieved.*documents" legal_qa_full.log
 2. **Verify services** đang chạy (Ollama, Qdrant)
 3. **Test từng component** riêng biệt
 4. **Check dependencies** versions
-5. **Sử dụng app_simple.py** nếu app.py gặp lỗi
 
-### Quick Start cho người mới
 
-```bash
-# Cách nhanh nhất để bắt đầu
-ollama pull gemma3:1b
-streamlit run app_simple.py
+## 🗂️ Cấu trúc dự án
+
+```
+Fine-tune-LegalVN/
+├── app.py                      # Ứng dụng Streamlit RAG chính
+├── pyproject.toml             # Dependencies và cấu hình
+├── data/                      # Dữ liệu đã xử lý
+│   ├── json/                  # Dữ liệu JSON từ crawler
+│   └── tables/                # Dữ liệu đã chuyển thành bảng
+├── scripts/                   # Scripts xử lý dữ liệu
+│   ├── legal_qa_crawler.py    # Crawler pháp luật
+│   ├── json_to_tables.py      # Chuyển JSON thành tables
+│   └── get_legal_qa_urls.py   # Lấy URLs
+├── notebooks/                 # Jupyter notebooks
+│   ├── index_database.ipynb   # Tạo vector database
+│   └── qa_generation.ipynb    # Tạo Q&A pairs
+├── test/                      # Test cases
+└── cache/                     # Cache embeddings
 ```
 
-### Full Setup cho advanced users
+### Full Setup 
 
 ```bash
 # Setup đầy đủ với RAG
@@ -442,5 +421,3 @@ streamlit run app.py
 ---
 
 **Happy Chatting! ⚖️🤖**
-
-*Chọn phiên bản phù hợp với nhu cầu của bạn: Simple LLM cho setup nhanh, Full RAG cho chất lượng cao!*
