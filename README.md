@@ -212,16 +212,6 @@ python start_app.py
 - ✅ Tự động start Streamlit app
 - ✅ Error handling và troubleshooting
 
-## 📊 So sánh các Phiên bản
-
-| Tính năng | app_simple.py | app.py | start_app.py |
-|-----------|---------------|--------|--------------|
-| **Setup Complexity** | 🟢 Dễ | 🟡 Trung bình | 🟢 Dễ |
-| **Response Quality** | 🟡 Tốt | 🟢 Rất tốt | 🟢 Rất tốt |
-| **Speed** | 🟢 Nhanh | 🟡 Trung bình | 🟡 Trung bình |
-| **Resource Usage** | 🟢 Thấp | 🟡 Trung bình | 🟡 Trung bình |
-| **RAG System** | ❌ Không | ✅ Có | ✅ Có |
-| **Source References** | ❌ Không | ✅ Có | ✅ Có |
 
 ## 🎯 Cách sử dụng
 
@@ -317,7 +307,7 @@ ollama list
 
 # Cài đặt model
 ollama pull llama3.1:8b  # cho app.py
-ollama pull gemma3:1b    # cho app_simple.py
+ollama pull gemma3:1b   # nhẹ và nhanh hơn
 
 # Khởi động Ollama
 ollama serve
@@ -389,12 +379,11 @@ grep "Retrieved.*documents" legal_qa_full.log
 
 ### Tính năng sắp tới
 
-1. **Voice input**: Sử dụng `streamlit-audio-recorder`
-2. **File upload**: Cho phép upload tài liệu pháp luật
-3. **Export chat**: Xuất lịch sử chat ra PDF
-4. **Multi-language**: Hỗ trợ tiếng Anh
-5. **Admin panel**: Quản lý collection và models
-6. **API endpoints**: REST API cho integration
+1**File upload**: Cho phép upload tài liệu pháp luật
+2**Export chat**: Xuất lịch sử chat ra PDF
+3**Multi-language**: Hỗ trợ tiếng Anh
+4**Admin panel**: Quản lý collection và models
+5**API endpoints**: REST API cho integration
 
 ### Cải thiện performance
 
@@ -411,17 +400,9 @@ grep "Retrieved.*documents" legal_qa_full.log
 2. **Verify services** đang chạy (Ollama, Qdrant)
 3. **Test từng component** riêng biệt
 4. **Check dependencies** versions
-5. **Sử dụng app_simple.py** nếu app.py gặp lỗi
 
-### Quick Start cho người mới
 
-```bash
-# Cách nhanh nhất để bắt đầu
-ollama pull gemma3:1b
-streamlit run app_simple.py
-```
-
-### Full Setup cho advanced users
+### Full Setup 
 
 ```bash
 # Setup đầy đủ với RAG
